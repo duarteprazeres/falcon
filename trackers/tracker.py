@@ -10,9 +10,15 @@ from utils import get_center_of_bbox, get_bbox_width, get_foot_position
 
 class Tracker:
     def __init__(self, model_path, device='mps'):
-        self.model = YOLO(model_path) 
+        self.model = YOLO(model_path)
         self.device = device
-        self.tracker = sv.ByteTrack()
+        self.tracker = sv.ByteTrack(
+            track_activation_threshold=0.25,
+            lost_track_buffer=300,       # 10 s at 30 fps — Veo zoom events can hide all players
+            minimum_matching_threshold=0.7,
+            frame_rate=30,
+            minimum_consecutive_frames=2, # 2 consecutive detections to confirm a new track
+        )
 
     def add_position_to_tracks(self, tracks):
         for object, object_tracks in tracks.items():
@@ -56,8 +62,8 @@ class Tracker:
 
         # Helper function to process a batch of frames
         def process_batch(batch_frames, current_frame_num):
-            # half=True uses FP16 precision, making it 2x faster on Apple Silicon
-            detections = self.model.predict(batch_frames, conf=0.1, verbose=False, device=self.device, half=True)
+            # conf=0.3 cuts false positives (e.g. warmup players, ball boys) vs the old 0.1
+            detections = self.model.predict(batch_frames, conf=0.3, verbose=False, device=self.device, half=True)
             
             for i, detection in enumerate(detections):
                 cls_names = detection.names
@@ -113,6 +119,46 @@ class Tracker:
 
         return tracks
     
+    def filter_players_outside_field(self, tracks, pitch_keypoints_per_frame, margin_px=60):
+        """
+        Removes player detections whose foot position falls outside the
+        detected pitch polygon (convex hull of visible field keypoints).
+
+        This eliminates warmup players, ball boys, and sideline staff who
+        are correctly detected by YOLO but should not appear in tracking data.
+
+        margin_px: extra pixels outside the hull that are still accepted
+                   (handles feet near the touchline).
+        """
+        for frame_num, keypoints in enumerate(pitch_keypoints_per_frame):
+            if frame_num >= len(tracks['players']):
+                break
+
+            if keypoints is None or len(keypoints.xy) == 0:
+                continue  # No keypoints for this frame (calibration mode or detection failure)
+
+            kp_xy = keypoints.xy[0]  # shape [N, 2]
+            valid_kps = kp_xy[(kp_xy[:, 0] > 1) | (kp_xy[:, 1] > 1)]
+
+            if len(valid_kps) < 4:
+                continue  # Too few keypoints visible — skip this frame
+
+            hull = cv2.convexHull(valid_kps.astype(np.float32))
+
+            to_remove = [
+                track_id
+                for track_id, info in tracks['players'][frame_num].items()
+                if info.get('position') is not None
+                and cv2.pointPolygonTest(
+                    hull,
+                    (float(info['position'][0]), float(info['position'][1])),
+                    measureDist=True
+                ) < -margin_px
+            ]
+
+            for track_id in to_remove:
+                del tracks['players'][frame_num][track_id]
+
     def draw_ellipse(self, frame, bbox, color, track_id=None):
         y2 = int(bbox[3])
         x_center, _ = get_center_of_bbox(bbox)

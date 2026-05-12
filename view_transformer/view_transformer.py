@@ -1,35 +1,91 @@
+import json
+import os
 import numpy as np
 import cv2
 import supervision as sv
 from sports.common.view import ViewTransformer as _RoboflowViewTransformer
 from sports.configs.soccer import SoccerPitchConfiguration
 
-# The standard soccer pitch configuration with real-world dimensions in cm.
-# A full FIFA pitch is 120m × 70m (12000cm × 7000cm).
-# You can override these dimensions for smaller youth pitches if needed.
 CONFIG = SoccerPitchConfiguration()
+
+CALIBRATION_PATH = "calibration/calibration.json"
 
 
 class ViewTransformer:
     """
-    Dynamic perspective transformer that converts pixel coordinates in the
-    video frame to real-world field coordinates (centimetres).
+    Dynamic perspective transformer: pixel coordinates → real-world cm.
 
-    Unlike the previous implementation (which had 4 hard-coded pixel vertices
-    specific to a single video), this version:
-    - Receives detected field keypoints from PitchDetector on each frame
-    - Automatically computes the homography matrix from those keypoints
-    - Works with ANY camera angle, zoom level, or field (including Veo)
-
-    The real-world coordinate system is defined by SoccerPitchConfiguration:
-    - Origin (0, 0): top-left corner of the pitch
-    - X axis: along the length of the pitch (0 → 12000 cm)
-    - Y axis: along the width of the pitch (0 → 7000 cm)
+    Supports two modes:
+    1. YOLO mode (default): homography recomputed each frame from detected keypoints.
+    2. Calibration mode: homography computed once from manual calibration, then
+       adjusted per frame using cumulative camera movement (optical flow).
+       Skips the YOLO pitch detection pass entirely — ~40% faster.
     """
 
     def __init__(self):
         self.config = CONFIG
-        self._transformer = None  # Built dynamically per frame
+        self._transformer = None
+
+        # Calibration mode state
+        self._cal_source_ref = None   # reference pixel points (N×2 float32)
+        self._cal_target = None       # world points (N×2 float32)
+        self._calibrated = False
+
+    @property
+    def is_calibrated(self) -> bool:
+        return self._calibrated
+
+    def load_calibration(self, path: str = CALIBRATION_PATH) -> bool:
+        """
+        Loads a manual calibration saved by calibrate.py.
+
+        Returns True if loaded successfully, False if the file doesn't exist.
+        """
+        if not os.path.exists(path):
+            return False
+
+        with open(path) as f:
+            data = json.load(f)
+
+        self._cal_source_ref = np.array(data["pixel_points"], dtype=np.float32)
+        self._cal_target = np.array(data["world_points"], dtype=np.float32)
+        self._calibrated = True
+
+        # Build the initial homography from the reference frame
+        self._build_calibrated_homography(np.zeros(2, dtype=np.float32))
+        print(f"Calibração carregada: {data['n_points']} pontos de '{path}'")
+        return True
+
+    def _build_calibrated_homography(self, cumulative_movement: np.ndarray) -> bool:
+        """
+        Recomputes the homography from the calibration points adjusted by the
+        cumulative camera panning offset since the reference frame.
+
+        For a panning camera, a displacement of (dx, dy) pixels means every
+        reference pixel point needs to be shifted by (-dx, -dy) to find where
+        that same real-world point appears in the current frame.
+        """
+        shifted_source = self._cal_source_ref - cumulative_movement
+        try:
+            self._transformer = _RoboflowViewTransformer(
+                source=shifted_source,
+                target=self._cal_target,
+            )
+            return True
+        except (ValueError, cv2.error):
+            return False
+
+    def update_from_camera_movement(self, cumulative_dx: float, cumulative_dy: float) -> bool:
+        """
+        Updates the homography for the current frame using the total camera
+        displacement (in pixels) accumulated since the reference frame.
+
+        Call this once per frame instead of update() when in calibration mode.
+        """
+        if not self._calibrated:
+            return False
+        movement = np.array([cumulative_dx, cumulative_dy], dtype=np.float32)
+        return self._build_calibrated_homography(movement)
 
     def update(self, keypoints: sv.KeyPoints) -> bool:
         """
