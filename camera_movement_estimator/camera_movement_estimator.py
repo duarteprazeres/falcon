@@ -2,13 +2,11 @@ import pickle
 import cv2
 import numpy as np
 import os
-import sys 
-sys.path.append('../')
-from utils import measure_distance,measure_xy_distance
+from utils import measure_distance, measure_xy_distance
 
 class CameraMovementEstimator():
-    def __init__(self,frame):
-        self.minimum_distance = 5
+    def __init__(self, frame):
+        self.minimum_distance = 1.0
 
         self.lk_params = dict(
             winSize = (15,15),
@@ -17,19 +15,25 @@ class CameraMovementEstimator():
         )
 
         first_frame_grayscale = cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
+        h, w = first_frame_grayscale.shape
         mask_features = np.zeros_like(first_frame_grayscale)
-        mask_features[:,0:20] = 1
-        mask_features[:,900:1050] = 1
+        
+        # Mask the borders of the image to track static background (sky, trees, stadium walls)
+        # instead of the pitch where players are moving.
+        mask_features[0:h//10, :] = 1          # Top 10%
+        mask_features[h - h//10:, :] = 1       # Bottom 10%
+        mask_features[:, 0:w//10] = 1          # Left 10%
+        mask_features[:, w - w//10:] = 1       # Right 10%
 
         self.features = dict(
             maxCorners = 100,
             qualityLevel = 0.3,
-            minDistance =3,
+            minDistance = 3,
             blockSize = 7,
             mask = mask_features
         )
 
-    def add_adjust_positions_to_tracks(self,tracks, camera_movement_per_frame):
+    def add_adjust_positions_to_tracks(self, tracks, camera_movement_per_frame):
         for object, object_tracks in tracks.items():
             for frame_num, track in enumerate(object_tracks):
                 for track_id, track_info in track.items():
@@ -39,20 +43,25 @@ class CameraMovementEstimator():
                     tracks[object][frame_num][track_id]['position_adjusted'] = position_adjusted
                     
 
-
-    def get_camera_movement(self,frames,read_from_stub=False, stub_path=None):
+    def get_camera_movement(self, frames_generator, read_from_stub=False, stub_path=None):
         # Read the stub 
         if read_from_stub and stub_path is not None and os.path.exists(stub_path):
             with open(stub_path,'rb') as f:
                 return pickle.load(f)
 
-        camera_movement = [[0,0]]*len(frames)
+        camera_movement = []
+        old_gray = None
+        old_features = None
 
-        old_gray = cv2.cvtColor(frames[0],cv2.COLOR_BGR2GRAY)
-        old_features = cv2.goodFeaturesToTrack(old_gray,**self.features)
+        for frame_num, frame in enumerate(frames_generator):
+            frame_gray = cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
+            
+            if old_gray is None:
+                old_gray = frame_gray
+                old_features = cv2.goodFeaturesToTrack(old_gray,**self.features)
+                camera_movement.append([0,0])
+                continue
 
-        for frame_num in range(1,len(frames)):
-            frame_gray = cv2.cvtColor(frames[frame_num],cv2.COLOR_BGR2GRAY)
             new_features, _,_ = cv2.calcOpticalFlowPyrLK(old_gray,frame_gray,old_features,None,**self.lk_params)
 
             max_distance = 0
@@ -68,8 +77,10 @@ class CameraMovementEstimator():
                     camera_movement_x,camera_movement_y = measure_xy_distance(old_features_point, new_features_point ) 
             
             if max_distance > self.minimum_distance:
-                camera_movement[frame_num] = [camera_movement_x,camera_movement_y]
+                camera_movement.append([camera_movement_x,camera_movement_y])
                 old_features = cv2.goodFeaturesToTrack(frame_gray,**self.features)
+            else:
+                camera_movement.append([0,0])
 
             old_gray = frame_gray.copy()
         
@@ -79,11 +90,9 @@ class CameraMovementEstimator():
 
         return camera_movement
     
-    def draw_camera_movement(self,frames, camera_movement_per_frame):
-        output_frames=[]
-
-        for frame_num, frame in enumerate(frames):
-            frame= frame.copy()
+    def draw_camera_movement(self, frames_generator, camera_movement_per_frame):
+        for frame_num, frame in enumerate(frames_generator):
+            frame = frame.copy()
 
             overlay = frame.copy()
             cv2.rectangle(overlay,(0,0),(500,100),(255,255,255),-1)
@@ -94,6 +103,4 @@ class CameraMovementEstimator():
             frame = cv2.putText(frame,f"Camera Movement X: {x_movement:.2f}",(10,30), cv2.FONT_HERSHEY_SIMPLEX,1,(0,0,0),3)
             frame = cv2.putText(frame,f"Camera Movement Y: {y_movement:.2f}",(10,60), cv2.FONT_HERSHEY_SIMPLEX,1,(0,0,0),3)
 
-            output_frames.append(frame) 
-
-        return output_frames
+            yield frame 

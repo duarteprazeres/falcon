@@ -1,2 +1,7 @@
-*__pycahce__*
+*__pycache__*
 *.pyc
+models/*.pt
+input_videos/
+output_videos/
+stubs/
+.DS_Store

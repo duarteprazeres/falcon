@@ -1,7 +1,23 @@
+# Core CV
 ultralytics
 supervision
 opencv-python
 numpy
-matplotlib
 pandas
+
+# roboflow/sports — instalar do git (inclui SoccerPitchConfiguration, ViewTransformer, annotators)
+git+https://github.com/roboflow/sports.git
+
+# TeamClassifier (SigLIP + UMAP + KMeans)
+transformers
+umap-learn
+torch
+tqdm
+
+# Download de modelos do Google Drive
+gdown
+
+# Análise e visualização
+matplotlib
 scikit-learn
+scipy

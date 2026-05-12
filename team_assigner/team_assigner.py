@@ -1,73 +1,59 @@
-from sklearn.cluster import KMeans
+from sports.common.team import TeamClassifier
+import numpy as np
 
 class TeamAssigner:
-    def __init__(self):
-        self.team_colors = {}
+    """
+    Assigns players to teams using the SigLIP + UMAP + KMeans approach
+    from the roboflow/sports library, replacing the old raw RGB KMeans.
+    """
+    def __init__(self, device='cpu'):
+        self.team_classifier = TeamClassifier(device=device, batch_size=8)
         self.player_team_dict = {}
-    
-    def get_clustering_model(self,image):
-        # Reshape the image to 2D array
-        image_2d = image.reshape(-1,3)
-
-        # Preform K-means with 2 clusters
-        kmeans = KMeans(n_clusters=2, init="k-means++",n_init=1)
-        kmeans.fit(image_2d)
-
-        return kmeans
-
-    def get_player_color(self,frame,bbox):
-        image = frame[int(bbox[1]):int(bbox[3]),int(bbox[0]):int(bbox[2])]
-
-        top_half_image = image[0:int(image.shape[0]/2),:]
-
-        # Get Clustering model
-        kmeans = self.get_clustering_model(top_half_image)
-
-        # Get the cluster labels forr each pixel
-        labels = kmeans.labels_
-
-        # Reshape the labels to the image shape
-        clustered_image = labels.reshape(top_half_image.shape[0],top_half_image.shape[1])
-
-        # Get the player cluster
-        corner_clusters = [clustered_image[0,0],clustered_image[0,-1],clustered_image[-1,0],clustered_image[-1,-1]]
-        non_player_cluster = max(set(corner_clusters),key=corner_clusters.count)
-        player_cluster = 1 - non_player_cluster
-
-        player_color = kmeans.cluster_centers_[player_cluster]
-
-        return player_color
-
-
-    def assign_team_color(self,frame, player_detections):
         
-        player_colors = []
-        for _, player_detection in player_detections.items():
-            bbox = player_detection["bbox"]
-            player_color =  self.get_player_color(frame,bbox)
-            player_colors.append(player_color)
-        
-        kmeans = KMeans(n_clusters=2, init="k-means++",n_init=10)
-        kmeans.fit(player_colors)
+        # BGR Colors for OpenCV (Pink and Blue)
+        self.team_colors = {
+            1: (147, 20, 255),  # Pink
+            2: (255, 191, 0)    # Blue
+        }
+        self.is_fitted = False
 
-        self.kmeans = kmeans
+    def get_crop(self, frame, bbox):
+        x1, y1, x2, y2 = map(int, bbox)
+        # Ensure coordinates are within frame bounds
+        x1 = max(0, x1)
+        y1 = max(0, y1)
+        x2 = min(frame.shape[1], x2)
+        y2 = min(frame.shape[0], y2)
+        return frame[y1:y2, x1:x2]
 
-        self.team_colors[1] = kmeans.cluster_centers_[0]
-        self.team_colors[2] = kmeans.cluster_centers_[1]
+    def fit_from_crops(self, crops):
+        """
+        Fits the classifier on a diverse list of player crops.
+        """
+        if len(crops) > 0:
+            self.team_classifier.fit(crops)
+            self.is_fitted = True
 
-
-    def get_player_team(self,frame,player_bbox,player_id):
+    def get_player_team(self, frame, player_bbox, player_id):
+        """
+        Predicts the team for a player. If already predicted, returns from cache.
+        """
         if player_id in self.player_team_dict:
             return self.player_team_dict[player_id]
 
-        player_color = self.get_player_color(frame,player_bbox)
+        if not self.is_fitted:
+            return 1 # Fallback if no players were found in the first frame
 
-        team_id = self.kmeans.predict(player_color.reshape(1,-1))[0]
-        team_id+=1
-
-        if player_id ==91:
-            team_id=1
+        crop = self.get_crop(frame, player_bbox)
+        
+        # Guard against empty crops (e.g., if bbox is outside frame)
+        if crop.size == 0:
+            return 1
+            
+        team_id = self.team_classifier.predict([crop])[0]
+        # TeamClassifier returns 0 or 1. Map to 1 or 2.
+        team_id += 1
 
         self.player_team_dict[player_id] = team_id
-
         return team_id
+
