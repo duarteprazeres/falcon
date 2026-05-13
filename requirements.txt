@@ -21,3 +21,4 @@ gdown
 matplotlib
 scikit-learn
 scipy
+filterpy          # Kalman filter para ball tracking

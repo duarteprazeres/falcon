@@ -119,31 +119,34 @@ class Tracker:
 
         return tracks
     
-    def filter_players_outside_field(self, tracks, pitch_keypoints_per_frame, margin_px=60):
+    def filter_players_outside_field(self, tracks, pitch_keypoints_per_frame,
+                                       margin_px=60, static_hull=None):
         """
         Removes player detections whose foot position falls outside the
-        detected pitch polygon (convex hull of visible field keypoints).
+        pitch polygon.
 
-        This eliminates warmup players, ball boys, and sideline staff who
-        are correctly detected by YOLO but should not appear in tracking data.
+        In YOLO mode: builds the hull per-frame from detected keypoints.
+        In calibration mode: uses static_hull (convex hull of calibration
+        landmark pixel positions) for every frame.
 
-        margin_px: extra pixels outside the hull that are still accepted
-                   (handles feet near the touchline).
+        margin_px: extra pixels of tolerance at the touchlines.
+        static_hull: pre-computed hull from calibration (used when keypoints
+                     are unavailable).
         """
         for frame_num, keypoints in enumerate(pitch_keypoints_per_frame):
             if frame_num >= len(tracks['players']):
                 break
 
-            if keypoints is None or len(keypoints.xy) == 0:
-                continue  # No keypoints for this frame (calibration mode or detection failure)
+            hull = static_hull  # fallback: calibration hull (may be None)
 
-            kp_xy = keypoints.xy[0]  # shape [N, 2]
-            valid_kps = kp_xy[(kp_xy[:, 0] > 1) | (kp_xy[:, 1] > 1)]
+            if keypoints is not None and len(keypoints.xy) > 0:
+                kp_xy = keypoints.xy[0]
+                valid_kps = kp_xy[(kp_xy[:, 0] > 1) | (kp_xy[:, 1] > 1)]
+                if len(valid_kps) >= 4:
+                    hull = cv2.convexHull(valid_kps.astype(np.float32))
 
-            if len(valid_kps) < 4:
-                continue  # Too few keypoints visible — skip this frame
-
-            hull = cv2.convexHull(valid_kps.astype(np.float32))
+            if hull is None:
+                continue
 
             to_remove = [
                 track_id

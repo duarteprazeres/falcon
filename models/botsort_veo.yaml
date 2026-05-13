@@ -1,0 +1,29 @@
+# BoT-SORT config tuned for Veo broadcast cameras
+# Veo auto-follows the ball with constant zoom/pan, so players regularly
+# leave and re-enter the frame.  Key differences from stock defaults:
+#   - track_buffer 300  → keep lost tracks alive for 10 s (was 30)
+#   - new_track_thresh 0.5 → require more confidence before creating a new track
+#   - match_thresh 0.7 → slightly more permissive for zoom-displaced players
+#   - gmc_method sparseOptFlow → CMC compensates camera pan before IoU matching
+
+tracker_type: botsort
+
+# Detection thresholds
+track_high_thresh: 0.4   # first-stage match; consistent with conf=0.4 in YOLO
+track_low_thresh: 0.1    # second-stage: low-conf detections re-associate lost tracks
+new_track_thresh: 0.5    # higher than default → fewer spurious new tracks
+
+# Track lifecycle
+track_buffer: 300        # frames to keep lost tracks; 10 s at 30 fps
+match_thresh: 0.7        # IoU threshold; lower than default to handle zoom shifts
+fuse_score: True         # blend detection confidence into matching cost
+
+# Camera Motion Compensation — critical for Veo's moving camera
+gmc_method: sparseOptFlow  # sparse optical flow compensates pan/zoom before matching
+
+# ReID — uses detector backbone features (free, no separate model needed)
+# Lower appearance_thresh → appearance must be more similar to match → less cross-team confusion
+proximity_thresh: 0.5
+appearance_thresh: 0.6
+with_reid: True
+model: auto

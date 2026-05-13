@@ -75,6 +75,17 @@ class ViewTransformer:
         except (ValueError, cv2.error):
             return False
 
+    def get_calibration_pixel_hull(self) -> np.ndarray | None:
+        """
+        Returns the convex hull of the calibration source points in pixel space.
+
+        Used to filter out-of-field detections when in calibration mode (where
+        YOLO pitch keypoints are not available per-frame).
+        """
+        if not self._calibrated or self._cal_source_ref is None or len(self._cal_source_ref) < 3:
+            return None
+        return cv2.convexHull(self._cal_source_ref.astype(np.float32))
+
     def update_from_camera_movement(self, cumulative_dx: float, cumulative_dy: float) -> bool:
         """
         Updates the homography for the current frame using the total camera
